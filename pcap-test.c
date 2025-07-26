@@ -5,102 +5,94 @@
 #include <netinet/in.h>
 
 void usage() {
-    printf("사용법: pcap-test <interface>\n");
-    printf("예시: pcap-test wlan0\n");
+        printf("syntax: pcap-test <interface>\n");
+        printf("sample: pcap-test wlan0\n");
 }
 
 typedef struct {
-    char* dev_;
+        char* dev_;
 } Param;
 
 Param param = {
-    .dev_ = NULL
+        .dev_ = NULL
 };
 
-struct pcap {
-    uint8_t mac_start[6];
-    uint8_t mac_end[6];
-    uint8_t eth_type[2];
-    uint8_t ip_header[12];
-    uint8_t ip_start[4];
-    uint8_t ip_end[4];
-    uint8_t tcp_start[2];
-    uint8_t tcp_end[2];
+struct Packet{
+        u_int8_t mac_dst[6];
+        u_int8_t mac_src[6];
+        u_int8_t eth_type[2];
+        u_int8_t ip_etc[12];
+        u_int8_t ip_src[4];
+        u_int8_t ip_dst[4];
+        u_int8_t tcp_src[2];
+        u_int8_t tcp_dst[2];
 };
 
 bool parse(Param* param, int argc, char* argv[]) {
-    if (argc != 2) {
-        usage();
-        return false;
-    }
-    param->dev_ = argv[1];
-    return true;
+        if (argc != 2) {
+                usage();
+                return false;
+        }
+        param->dev_ = argv[1];
+        return true;
 }
 
 int main(int argc, char* argv[]) {
-    if (!parse(&param, argc, argv))
-        return -1;
+        if (!parse(&param, argc, argv))
+                return -1;
 
-    char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t* handle = pcap_open_live(param.dev_, BUFSIZ, 1, 1000, errbuf);
-    if (handle == NULL) {
-        fprintf(stderr, "pcap_open_live(%s) 실패: %s\n", param.dev_, errbuf);
-        return -1;
-    }
-
-    struct bpf_program fp;
-    if (pcap_compile(handle, &fp, "ip and tcp", 1, PCAP_NETMASK_UNKNOWN) == -1 ||
-        pcap_setfilter(handle, &fp) == -1) {
-        fprintf(stderr, "필터 설정 오류\n");
-        pcap_close(handle);
-        return -1;
-    }
-
-    while (true) {
-        struct pcap_pkthdr* header;
-        const u_char* packet;
-        int res = pcap_next_ex(handle, &header, &packet);
-        if (res == 0) continue;
-        if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-            fprintf(stderr, "pcap_next_ex 반환 오류 %d: %s\n", res, pcap_geterr(handle));
-            break;
+        char errbuf[PCAP_ERRBUF_SIZE];
+        pcap_t* pcap = pcap_open_live(param.dev_, BUFSIZ, 1, 1000, errbuf);
+        if (pcap == NULL) {
+                fprintf(stderr, "pcap_open_live(%s) return null - %s\n", param.dev_, errbuf);
+                return -1;
         }
 
-        struct pcap* pct = (struct pcap*)packet;
-        if (pct->eth_type[0] != 0x08 || pct->eth_type[1] != 0x00 || pct->ip_header[9] != 0x06)
-            continue;
+        while (true) {
+                struct pcap_pkthdr* header;
+                const u_char* packet;
+                int res = pcap_next_ex(pcap, &header, &packet);
+                if (res == 0) continue;
+                if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
+                        printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(pcap));
+                        break;
+                }
 
-        printf("\nMAC 시작 주소: ");
-        for (int i = 0; i < 6; i++) printf("%02x ", pct->mac_start[i]);
+                struct Packet* pct = (struct Packet*)packet;
+                if (pct->eth_type[0] != 0x08 || pct->eth_type[1] != 0x00 || pct->ip_etc[9] != 0x06) {
+                        printf("No\n");
+                        continue;
+                }
 
-        printf("\nMAC 목적지 주소: ");
-        for (int i = 0; i < 6; i++) printf("%02x ", pct->mac_end[i]);
+                printf("\nmac dst: ");
+                for (int i = 0; i < 6; i++) {
+                        printf("%02x ", pct->mac_dst[i]);
+                }
 
-        printf("\nIP 시작 주소: ");
-        for (int i = 0; i < 4; i++) printf("%02x ", pct->ip_start[i]);
+                printf("\nmac src: ");
+                for (int i = 0; i < 6; i++) {
+                        printf("%02x ", pct->mac_src[i]);
+                }
 
-        printf("\nIP 목적지 주소: ");
-        for (int i = 0; i < 4; i++) printf("%02x ", pct->ip_end[i]);
+                printf("\nip src: %u.%u.%u.%u",
+                       pct->ip_src[0], pct->ip_src[1], pct->ip_src[2], pct->ip_src[3]);
 
-        printf("\nTCP 시작 포트: ");
-        for (int i = 0; i < 2; i++) printf("%02x ", pct->tcp_start[i]);
+                printf("\nip dst: %u.%u.%u.%u",
+                       pct->ip_dst[0], pct->ip_dst[1], pct->ip_dst[2], pct->ip_dst[3]);
 
-        printf("\nTCP 목적지 포트: ");
-        for (int i = 0; i < 2; i++) printf("%02x ", pct->tcp_end[i]);
+                uint16_t sport = (uint16_t)((pct->tcp_src[0] << 8) | pct->tcp_src[1]);
+                uint16_t dport = (uint16_t)((pct->tcp_dst[0] << 8) | pct->tcp_dst[1]);
+                printf("\ntcp src: %u", sport);
+                printf("\ntcp dst: %u", dport);
 
-        size_t ihl = (pct->ip_header[0] & 0x0F) * 4;
-        size_t thl = (pct->tcp_start[0] >> 4) * 4;
-        size_t header_len = 14 + ihl + thl;
-        size_t caplen = header->caplen;
-        size_t data_len = caplen > header_len ? caplen - header_len : 0;
+                printf("\ndata: ");
+                for (int i = 0; i < header->caplen - 54 && i < 20; i++) {
+                        printf("%02x ", packet[i + 54]);
+                }
+                printf("\n");
+        }
 
-        printf("\n데이터 길이: %zu bytes\n", data_len);
-        printf("데이터: ");
-        for (size_t i = 0; i < data_len && i < 20; i++)
-            printf("%02x ", packet[header_len + i]);
-        printf("\n");
-    }
-
-    pcap_close(handle);
-    return 0;
+        pcap_close(pcap);
+        return 0;
 }
+
